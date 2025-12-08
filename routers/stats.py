@@ -1,0 +1,28 @@
+# routers/stats.py
+from fastapi import APIRouter
+from routers.tasks import tasks_db  # импортируем хранилище из tasks.py
+
+router = APIRouter(
+    prefix='/tasks',  # тоже начинается с /tasks
+    tags=['statistics']  # отдельная группа в Swagger
+)
+
+@router.get("/stats")
+async def get_tasks_stats() -> dict:
+    by_quadrant = {"Q1": 0, "Q2": 0, "Q3": 0, "Q4": 0}
+    by_status = {"completed": 0, "pending": 0}
+    
+    for task in tasks_db:
+        quadrant = task["quadrant"]
+        by_quadrant[quadrant] += 1
+        
+        if task["completed"]:
+            by_status["completed"] += 1
+        else:
+            by_status["pending"] += 1
+    
+    return {
+        "total_tasks": len(tasks_db),
+        "by_quadrant": by_quadrant,
+        "by_status": by_status
+    }
