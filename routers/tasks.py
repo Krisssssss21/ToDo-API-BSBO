@@ -1,94 +1,120 @@
 # routers/tasks.py
-from fastapi import APIRouter, HTTPException
-from typing import List, Dict, Any
+from fastapi import APIRouter, HTTPException, status, Response
+from typing import List
 from datetime import datetime
+from schemas import TaskCreate, TaskUpdate, TaskResponse
+from database import tasks_db  # импортируем из database.py
 
-# Создаем роутер для задач
 router = APIRouter(
-    prefix='/tasks',           # все эндпоинты будут начинаться с /tasks
-    tags=['tasks'],           # группировка в Swagger UI
+    prefix='/tasks',
+    tags=['tasks'],
     responses={404: {'description': 'Задача не найдена'}}
 )
 
-# Временное хранилище (перенесено из main.py)
-tasks_db: List[Dict[str, Any]] = [
-    {
-        "id": 1,
-        "title": "Сдать проект по FastAPI",
-        "description": "Завершить разработку API и написать документацию",
-        "is_important": True,
-        "is_urgent": True,
-        "quadrant": "Q1",
+# POST /tasks/ - создание задачи
+@router.post("/", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
+async def create_task(task: TaskCreate) -> TaskResponse:
+    # Определяем квадрант
+    if task.is_important and task.is_urgent:
+        quadrant = "Q1"
+    elif task.is_important and not task.is_urgent:
+        quadrant = "Q2"
+    elif not task.is_important and task.is_urgent:
+        quadrant = "Q3"
+    else:
+        quadrant = "Q4"
+    
+    new_id = max([t["id"] for t in tasks_db], default=0) + 1
+    
+    new_task = {
+        "id": new_id,
+        "title": task.title,
+        "description": task.description,
+        "is_important": task.is_important,
+        "is_urgent": task.is_urgent,
+        "quadrant": quadrant,
         "completed": False,
         "created_at": datetime.now()
-    },
-    {
-        "id": 2,
-        "title": "Изучить SQLAlchemy",
-        "description": "Прочитать документацию и попробовать примеры",
-        "is_important": True,
-        "is_urgent": False,
-        "quadrant": "Q2",
-        "completed": False,
-        "created_at": datetime.now()
-    },
-    {
-        "id": 3,
-        "title": "Сходить на лекцию",
-        "description": None,
-        "is_important": False,
-        "is_urgent": True,
-        "quadrant": "Q3",
-        "completed": False,
-        "created_at": datetime.now()
-    },
-    {
-        "id": 4,
-        "title": "Посмотреть сериал",
-        "description": "Новый сезон любимого сериала",
-        "is_important": False,
-        "is_urgent": False,
-        "quadrant": "Q4",
-        "completed": True,
-        "created_at": datetime.now()
-    },
-]
-
-# Все эндпоинты задач (без /tasks в начале, т.к. есть prefix)
-@router.get("")
-async def get_all_tasks() -> dict:
-    return {
-        "count": len(tasks_db),
-        "tasks": tasks_db
     }
+    
+    tasks_db.append(new_task)
+    return new_task
 
-@router.get("/quadrant/{quadrant}")
-async def get_tasks_by_quadrant(quadrant: str) -> dict:
+# GET /tasks/{task_id} - получение задачи по ID
+@router.get("/{task_id}", response_model=TaskResponse)
+async def get_task_by_id(task_id: int) -> TaskResponse:
+    task = next((task for task in tasks_db if task["id"] == task_id), None)
+    if not task:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+    return task
+
+# GET /tasks/ - получение всех задач
+@router.get("/", response_model=List[TaskResponse])
+async def get_all_tasks() -> List[TaskResponse]:
+    return tasks_db
+
+# PUT /tasks/{task_id} - обновление задачи
+@router.put("/{task_id}", response_model=TaskResponse)
+async def update_task(task_id: int, task_update: TaskUpdate) -> TaskResponse:
+    # Ищем задачу
+    task = next((task for task in tasks_db if task["id"] == task_id), None)
+    if not task:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+    
+    # Получаем только переданные поля
+    update_data = task_update.model_dump(exclude_unset=True)
+    
+    # Обновляем поля
+    for field, value in update_data.items():
+        task[field] = value
+    
+    # Пересчитываем квадрант если изменились важность или срочность
+    if "is_important" in update_data or "is_urgent" in update_data:
+        if task["is_important"] and task["is_urgent"]:
+            task["quadrant"] = "Q1"
+        elif task["is_important"] and not task["is_urgent"]:
+            task["quadrant"] = "Q2"
+        elif not task["is_important"] and task["is_urgent"]:
+            task["quadrant"] = "Q3"
+        else:
+            task["quadrant"] = "Q4"
+    
+    return task
+
+# PATCH /tasks/{task_id}/complete - отметить задачу выполненной
+@router.patch("/{task_id}/complete", response_model=TaskResponse)
+async def complete_task(task_id: int) -> TaskResponse:
+    task = next((task for task in tasks_db if task["id"] == task_id), None)
+    if not task:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+    
+    task["completed"] = True
+    task["completed_at"] = datetime.now()
+    return task
+
+# DELETE /tasks/{task_id} - удаление задачи
+@router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_task(task_id: int):
+    task = next((task for task in tasks_db if task["id"] == task_id), None)
+    if not task:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+    
+    tasks_db.remove(task)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+# Получение задач по квадранту
+@router.get("/quadrant/{quadrant}", response_model=List[TaskResponse])
+async def get_tasks_by_quadrant(quadrant: str) -> List[TaskResponse]:
     if quadrant not in ["Q1", "Q2", "Q3", "Q4"]:
         raise HTTPException(
             status_code=400,
             detail="Неверный квадрант. Используйте: Q1, Q2, Q3, Q4"
         )
     
-    filtered_tasks = [task for task in tasks_db if task["quadrant"] == quadrant]
-    return {
-        "quadrant": quadrant,
-        "count": len(filtered_tasks),
-        "tasks": filtered_tasks
-    }
+    return [task for task in tasks_db if task["quadrant"] == quadrant]
 
-@router.get("/{task_id}")
-async def get_task_by_id(task_id: int) -> dict:
-    for task in tasks_db:
-        if task["id"] == task_id:
-            return task
-    raise HTTPException(
-        status_code=404,
-        detail=f"Задача с ID {task_id} не найдена"
-    )
-
-@router.get("/status/{status}")
-async def get_tasks_by_status(status: str) -> dict:
+# Получение задач по статусу
+@router.get("/status/{status}", response_model=List[TaskResponse])
+async def get_tasks_by_status(status: str) -> List[TaskResponse]:
     if status not in ["completed", "pending"]:
         raise HTTPException(
             status_code=400,
@@ -96,40 +122,4 @@ async def get_tasks_by_status(status: str) -> dict:
         )
     
     is_completed = (status == "completed")
-    filtered_tasks = [task for task in tasks_db if task["completed"] == is_completed]
-    
-    return {
-        "status": status,
-        "count": len(filtered_tasks),
-        "tasks": filtered_tasks
-    }
-
-@router.get("/search")
-async def search_tasks(q: str) -> dict:
-    if len(q) < 2:
-        raise HTTPException(
-            status_code=400,
-            detail="Поисковый запрос должен содержать минимум 2 символа"
-        )
-    
-    q_lower = q.lower()
-    results = []
-    
-    for task in tasks_db:
-        title = task["title"].lower() if task["title"] else ""
-        description = task["description"].lower() if task["description"] else ""
-        
-        if q_lower in title or q_lower in description:
-            results.append(task)
-    
-    if not results:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Задачи по запросу '{q}' не найдены"
-        )
-    
-    return {
-        "query": q,
-        "count": len(results),
-        "tasks": results
-    }
+    return [task for task in tasks_db if task["completed"] == is_completed]
